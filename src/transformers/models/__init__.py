@@ -219,6 +219,7 @@ from . import (
     qwen2_audio,
     qwen2_moe,
     qwen2_vl,
+    qwen_omni_thinker,
     rag,
     recurrent_gemma,
     reformer,

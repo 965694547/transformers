@@ -92,7 +92,7 @@ class Qwen2VLProcessorTest(ProcessorTesterMixin, unittest.TestCase):
             processor()
 
         # test if it raises when no text is passed
-        with pytest.raises(TypeError):
+        with pytest.raises(ValueError):
             processor(images=image_input)
 
     def test_model_input_names(self):

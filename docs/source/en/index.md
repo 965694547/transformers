@@ -288,6 +288,9 @@ Flax), PyTorch, and/or TensorFlow.
 |                   [Qwen2Audio](model_doc/qwen2_audio)                    |       ✅        |         ❌         |      ❌      |
 |                     [Qwen2MoE](model_doc/qwen2_moe)                      |       ✅        |         ❌         |      ❌      |
 |                      [Qwen2VL](model_doc/qwen2_vl)                       |       ✅        |         ❌         |      ❌      |
+|  [QwenOmniThinkerAudioEncoder](model_doc/qwen_omni_thinker_audio_encoder)  |       ❌        |         ❌         |      ❌      |
+|            [QwenOmniThinkerConfig](model_doc/qwen_omni_thinker)            |       ✅        |         ❌         |      ❌      |
+| [QwenOmniThinkerVisionEncoder](model_doc/qwen_omni_thinker_vision_encoder) |       ❌        |         ❌         |      ❌      |
 |                           [RAG](model_doc/rag)                           |       ✅        |         ✅         |      ❌      |
 |                         [REALM](model_doc/realm)                         |       ✅        |         ❌         |      ❌      |
 |               [RecurrentGemma](model_doc/recurrent_gemma)                |       ✅        |         ❌         |      ❌      |
