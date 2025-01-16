@@ -961,6 +961,8 @@
         title: Qwen2Audio
       - local: model_doc/qwen2_vl
         title: Qwen2VL
+      - local: model_doc/qwen_omni_thinker
+        title: QwenOmniThinker
       - local: model_doc/sam
         title: Segment Anything
       - local: model_doc/siglip
