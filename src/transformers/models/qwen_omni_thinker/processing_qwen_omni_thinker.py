@@ -23,7 +23,7 @@ import numpy as np
 from ...feature_extraction_utils import BatchFeature
 from ...image_utils import ImageInput, VideoInput
 from ...processing_utils import ProcessingKwargs, ProcessorMixin, Unpack
-from ...tokenization_utils_base import PreTokenizedInput, TextInput, PaddingStrategy
+from ...tokenization_utils_base import PaddingStrategy, PreTokenizedInput, TextInput
 
 
 class QwenOmniThinkerProcessorKwargs(ProcessingKwargs, total=False):
@@ -95,7 +95,7 @@ class QwenOmniThinkerProcessor(ProcessorMixin):
                 The audio or batch of audios to be prepared. Each audio can be a NumPy array.
             sampling_rate (`int`, defaults to 16000):
                 The sampling rate at which the audio files should be digitalized expressed in hertz (Hz).
-            fsp (`int`, defaults to 2):
+            fps (`int`, defaults to 2):
                 The frames per second of video input.
         """
 

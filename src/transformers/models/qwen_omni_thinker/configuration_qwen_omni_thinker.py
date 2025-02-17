@@ -40,14 +40,12 @@ class QwenOmniThinkerVisionEncoderConfig(PretrainedConfig):
     Args:
         depth (`int`, *optional*, defaults to 32):
             Number of layers (depth) in the model.
-        embed_dim (`int`, *optional*, defaults to 1280):
-            Dimensionality of the embeddings.
         hidden_size (`int`, *optional*, defaults to 3584):
             The size of the hidden layers.
-        hidden_act (`str`, *optional*, defaults to `"quick_gelu"`):
+        hidden_act (`str`, *optional*, defaults to `"silu"`):
             The non-linear activation function used in the model. Supported options include `"quick_gelu"` and others as applicable.
-        mlp_ratio (`float`, *optional*, defaults to 4):
-            The ratio used to determine the size of the MLP (Multi-Layer Perceptron) hidden layer.
+        intermediate_size (`int`, *optional*, defaults to 3420):
+            Dimension of the MLP representations.
         num_heads (`int`, *optional*, defaults to 16):
             Number of attention heads for each attention layer.
         in_channels (`int`, *optional*, defaults to 3):
@@ -58,6 +56,12 @@ class QwenOmniThinkerVisionEncoderConfig(PretrainedConfig):
             The size used for merging spatial dimensions.
         temporal_patch_size (`int`, *optional*, defaults to 2):
             The size used for patches along the temporal dimension.
+        window_size (`int`, *optional*, defaults to 112):
+            The window size of sliding-window attention block.
+        out_hidden_size (`int`, *optional*, defaults to 3584):
+            Output hidden size of vision encoder.
+        fullatt_block_indexes (`List[int]`, *optional*, defaults to `[7, 15, 23, 31]`):
+            The list of layers with full attention.
         _attn_implementation (`str`, *optional*, defaults to `"flash_attention_2"`):
             The attention implementation strategy used in the model.
         init_std (`float`, *optional*, defaults to 0.02):
@@ -84,7 +88,6 @@ class QwenOmniThinkerVisionEncoderConfig(PretrainedConfig):
         self,
         depth=32,
         hidden_size=3584,
-        embed_dim=1280,
         hidden_act="silu",
         intermediate_size=3420,
         num_heads=16,
@@ -92,7 +95,6 @@ class QwenOmniThinkerVisionEncoderConfig(PretrainedConfig):
         patch_size=14,
         spatial_merge_size=2,
         temporal_patch_size=2,
-        tokens_per_second=4,
         window_size=112,
         out_hidden_size=3584,
         fullatt_block_indexes=[7, 15, 23, 31],
@@ -103,16 +105,14 @@ class QwenOmniThinkerVisionEncoderConfig(PretrainedConfig):
         super().__init__(**kwargs)
 
         self.depth = depth
-        self.embed_dim = embed_dim
         self.hidden_size = hidden_size
         self.hidden_act = hidden_act
-        self.intermediate_size=intermediate_size
+        self.intermediate_size = intermediate_size
         self.num_heads = num_heads
         self.in_channels = in_channels
         self.patch_size = patch_size
         self.spatial_merge_size = spatial_merge_size
         self.temporal_patch_size = temporal_patch_size
-        self.tokens_per_second = tokens_per_second
         self.window_size = window_size
         self.out_hidden_size = out_hidden_size
         self.fullatt_block_indexes = fullatt_block_indexes

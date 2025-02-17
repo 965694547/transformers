@@ -51,9 +51,9 @@ from .configuration_qwen_omni_thinker import (
 
 if is_flash_attn_2_available():
     from flash_attn.flash_attn_interface import flash_attn_varlen_func as flash_attn_varlen_func
+    from flash_attn.layers.rotary import apply_rotary_emb
 
     from ...modeling_flash_attention_utils import _flash_attention_forward
-    from flash_attn.layers.rotary import apply_rotary_emb
 else:
     flash_attn_varlen_func = None
     apply_rotary_emb = None
@@ -210,12 +210,14 @@ def apply_multimodal_rotary_pos_emb(q, k, cos, sin, mrope_section, unsqueeze_dim
     k_embed = (k * cos) + (rotate_half(k) * sin)
     return q_embed, k_embed
 
+
 def apply_rotary_pos_emb_flashatt(tensor: torch.Tensor, freqs: torch.Tensor) -> torch.Tensor:
     tensor_ = tensor.float()
     cos = freqs.cos().type_as(tensor_)
     sin = freqs.sin().type_as(tensor_)
     output = apply_rotary_emb(tensor_, cos, sin).type_as(tensor)
     return output
+
 
 class QwenOmniThinkerAudioAttention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
@@ -823,9 +825,9 @@ class QwenOmniThinkerAudioEncoder(QwenOmniThinkerPreTrainedModel):
         tmp_hidden_states = []
         # check if head_mask has a correct number of layers specified if desired
         if head_mask is not None:
-            assert head_mask.size()[0] == (len(self.layers)), (
-                f"The head_mask should be specified for {len(self.layers)} layers, but it is for {head_mask.size()[0]}."
-            )
+            assert head_mask.size()[0] == (
+                len(self.layers)
+            ), f"The head_mask should be specified for {len(self.layers)} layers, but it is for {head_mask.size()[0]}."
 
         for idx, encoder_layer in enumerate(self.layers):
             if output_hidden_states:
@@ -1173,7 +1175,7 @@ class QwenOmniThinkerVisionEncoder(Qwen2VLPreTrainedModel):
         rotary_pos_emb_full = self.rotary_pos_emb(max_grid_size)
         rotary_pos_emb = rotary_pos_emb_full[pos_ids].flatten(1)
         return rotary_pos_emb
-    
+
     def get_window_index(self, grid_thw):
         window_index: list = []
         cu_window_seqlens: list = [0]
