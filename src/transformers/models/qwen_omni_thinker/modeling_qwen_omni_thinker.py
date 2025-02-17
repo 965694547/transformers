@@ -53,8 +53,10 @@ if is_flash_attn_2_available():
     from flash_attn.flash_attn_interface import flash_attn_varlen_func as flash_attn_varlen_func
 
     from ...modeling_flash_attention_utils import _flash_attention_forward
+    from flash_attn.layers.rotary import apply_rotary_emb
 else:
     flash_attn_varlen_func = None
+    apply_rotary_emb = None
 
 
 logger = logging.get_logger(__name__)
@@ -208,6 +210,12 @@ def apply_multimodal_rotary_pos_emb(q, k, cos, sin, mrope_section, unsqueeze_dim
     k_embed = (k * cos) + (rotate_half(k) * sin)
     return q_embed, k_embed
 
+def apply_rotary_pos_emb_flashatt(tensor: torch.Tensor, freqs: torch.Tensor) -> torch.Tensor:
+    tensor_ = tensor.float()
+    cos = freqs.cos().type_as(tensor_)
+    sin = freqs.sin().type_as(tensor_)
+    output = apply_rotary_emb(tensor_, cos, sin).type_as(tensor)
+    return output
 
 class QwenOmniThinkerAudioAttention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
@@ -666,7 +674,7 @@ class QwenOmniThinkerPreTrainedModel(PreTrainedModel):
         Retrieve model's attribute to check whether the model supports
         SDPA or not.
         """
-        return self.language_model._supports_sdpa
+        return self.model._supports_sdpa
 
 
 # Ignore copy
@@ -715,6 +723,7 @@ class QwenOmniThinkerAudioEncoder(QwenOmniThinkerPreTrainedModel):
         self.register_buffer(
             "positional_embedding", sinusoids(self.max_source_positions, embed_dim).to(torch.bfloat16)
         )
+        self.audio_bos_eos_token = nn.Embedding(2, config.output_dim)
         self.layers = nn.ModuleList([QwenOmniThinkerAudioEncoderLayer(config) for _ in range(config.encoder_layers)])
         self.ln_post = nn.LayerNorm(config.d_model)
         # Ignore copy
@@ -932,7 +941,7 @@ class PatchMerger(nn.Module):
     def __init__(self, dim: int, context_dim: int, spatial_merge_size: int = 2) -> None:
         super().__init__()
         self.hidden_size = context_dim * (spatial_merge_size**2)
-        self.ln_q = nn.LayerNorm(context_dim, eps=1e-6)
+        self.ln_q = Qwen2RMSNorm(context_dim, eps=1e-6)
         self.mlp = nn.Sequential(
             nn.Linear(self.hidden_size, self.hidden_size),
             nn.GELU(),
@@ -972,12 +981,17 @@ def apply_rotary_pos_emb_vision(tensor: torch.Tensor, freqs: torch.Tensor) -> to
 class VisionMlp(nn.Module):
     def __init__(self, dim: int, hidden_dim: int, hidden_act: str) -> None:
         super().__init__()
-        self.fc1 = nn.Linear(dim, hidden_dim)
-        self.act = ACT2FN[hidden_act]
-        self.fc2 = nn.Linear(hidden_dim, dim)
+        self.gate_proj = nn.Linear(dim, hidden_dim)
+        self.up_proj = nn.Linear(dim, hidden_dim)
+        self.down_proj = nn.Linear(hidden_dim, dim)
+        # self.fc2 = nn.Linear(dim, hidden_dim)
+        # self.fc1 = nn.Linear(dim, hidden_dim)
+        # self.fc3 = nn.Linear(hidden_dim, dim)
+        self.act_fn = ACT2FN[hidden_act]
 
     def forward(self, x) -> torch.Tensor:
-        return self.fc2(self.act(self.fc1(x)))
+        return self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+        # return self.fc3(self.act_fn(self.fc2(x)) * self.fc1(x))
 
 
 class VisionAttention(nn.Module):
@@ -1027,8 +1041,10 @@ class VisionFlashAttention2(nn.Module):
     ) -> torch.Tensor:
         seq_length = hidden_states.shape[0]
         q, k, v = self.qkv(hidden_states).reshape(seq_length, 3, self.num_heads, -1).permute(1, 0, 2, 3).unbind(0)
-        q = apply_rotary_pos_emb_vision(q.unsqueeze(0), rotary_pos_emb).squeeze(0)
-        k = apply_rotary_pos_emb_vision(k.unsqueeze(0), rotary_pos_emb).squeeze(0)
+        q = apply_rotary_pos_emb_flashatt(q.unsqueeze(0), rotary_pos_emb).squeeze(0)
+        k = apply_rotary_pos_emb_flashatt(k.unsqueeze(0), rotary_pos_emb).squeeze(0)
+        # q = apply_rotary_pos_emb_vision(q.unsqueeze(0), rotary_pos_emb).squeeze(0)
+        # k = apply_rotary_pos_emb_vision(k.unsqueeze(0), rotary_pos_emb).squeeze(0)
 
         max_seqlen = (cu_seqlens[1:] - cu_seqlens[:-1]).max().item()
         attn_output = flash_attn_varlen_func(q, k, v, cu_seqlens, cu_seqlens, max_seqlen, max_seqlen).reshape(
@@ -1076,14 +1092,13 @@ QWEN_OMNI_THINKER_VISION_ATTENTION_CLASSES = {
 class QwenOmniThinkerVisionBlock(nn.Module):
     def __init__(self, config, attn_implementation: str = "sdpa") -> None:
         super().__init__()
-        self.norm1 = nn.LayerNorm(config.embed_dim, eps=1e-6)
-        self.norm2 = nn.LayerNorm(config.embed_dim, eps=1e-6)
-        mlp_hidden_dim = int(config.embed_dim * config.mlp_ratio)
+        self.norm1 = Qwen2RMSNorm(config.hidden_size, eps=1e-6)
+        self.norm2 = Qwen2RMSNorm(config.hidden_size, eps=1e-6)
 
         self.attn = QWEN_OMNI_THINKER_VISION_ATTENTION_CLASSES[attn_implementation](
-            config.embed_dim, num_heads=config.num_heads
+            config.hidden_size, num_heads=config.num_heads
         )
-        self.mlp = VisionMlp(dim=config.embed_dim, hidden_dim=mlp_hidden_dim, hidden_act=config.hidden_act)
+        self.mlp = VisionMlp(dim=config.hidden_size, hidden_dim=config.intermediate_size, hidden_act=config.hidden_act)
 
     def forward(self, hidden_states, cu_seqlens, rotary_pos_emb) -> torch.Tensor:
         hidden_states = hidden_states + self.attn(
@@ -1100,29 +1115,35 @@ class QwenOmniThinkerVisionEncoder(Qwen2VLPreTrainedModel):
     def __init__(self, config) -> None:
         super().__init__(config)
         self.spatial_merge_size = config.spatial_merge_size
+        self.patch_size = config.patch_size
+        self.fullatt_block_indexes = config.fullatt_block_indexes
+        self.window_size = config.window_size
+        self.spatial_merge_unit = self.spatial_merge_size * self.spatial_merge_size
 
         self.patch_embed = PatchEmbed(
             patch_size=config.patch_size,
             temporal_patch_size=config.temporal_patch_size,
             in_channels=config.in_channels,
-            embed_dim=config.embed_dim,
+            embed_dim=config.hidden_size,
         )
 
-        head_dim = config.embed_dim // config.num_heads
+        head_dim = config.hidden_size // config.num_heads
         self.rotary_pos_emb = VisionRotaryEmbedding(head_dim // 2)
 
         self.blocks = nn.ModuleList(
             [QwenOmniThinkerVisionBlock(config, config._attn_implementation) for _ in range(config.depth)]
         )
         self.merger = PatchMerger(
-            dim=config.hidden_size, context_dim=config.embed_dim, spatial_merge_size=config.spatial_merge_size
+            dim=config.out_hidden_size, context_dim=config.hidden_size, spatial_merge_size=config.spatial_merge_size
         )
+        self.gradient_checkpointing = False
+        # Initialize weights and apply final processing
 
     def get_dtype(self) -> torch.dtype:
-        return self.blocks[0].mlp.fc2.weight.dtype
+        return self.blocks[0].mlp.gate_proj.weight.dtype
 
     def get_device(self) -> torch.device:
-        return self.blocks[0].mlp.fc2.weight.device
+        return self.blocks[0].mlp.gate_proj.weight.device
 
     def rot_pos_emb(self, grid_thw):
         pos_ids = []
@@ -1152,20 +1173,98 @@ class QwenOmniThinkerVisionEncoder(Qwen2VLPreTrainedModel):
         rotary_pos_emb_full = self.rotary_pos_emb(max_grid_size)
         rotary_pos_emb = rotary_pos_emb_full[pos_ids].flatten(1)
         return rotary_pos_emb
+    
+    def get_window_index(self, grid_thw):
+        window_index: list = []
+        cu_window_seqlens: list = [0]
+        window_index_id = 0
+        vit_merger_window_size = self.window_size // self.spatial_merge_size // self.patch_size
+
+        for grid_t, grid_h, grid_w in grid_thw:
+            llm_grid_h, llm_grid_w = (
+                grid_h // self.spatial_merge_size,
+                grid_w // self.spatial_merge_size,
+            )
+            index = torch.arange(grid_t * llm_grid_h * llm_grid_w).reshape(grid_t, llm_grid_h, llm_grid_w)
+            pad_h = vit_merger_window_size - llm_grid_h % vit_merger_window_size
+            pad_w = vit_merger_window_size - llm_grid_w % vit_merger_window_size
+            num_windows_h = (llm_grid_h + pad_h) // vit_merger_window_size
+            num_windows_w = (llm_grid_w + pad_w) // vit_merger_window_size
+            index_padded = F.pad(index, (0, pad_w, 0, pad_h), "constant", -100)
+            index_padded = index_padded.reshape(
+                grid_t,
+                num_windows_h,
+                vit_merger_window_size,
+                num_windows_w,
+                vit_merger_window_size,
+            )
+            index_padded = index_padded.permute(0, 1, 3, 2, 4).reshape(
+                grid_t,
+                num_windows_h * num_windows_w,
+                vit_merger_window_size,
+                vit_merger_window_size,
+            )
+            seqlens = (index_padded != -100).sum([2, 3]).reshape(-1)
+            index_padded = index_padded.reshape(-1)
+            index_new = index_padded[index_padded != -100]
+            window_index.append(index_new + window_index_id)
+            cu_seqlens_tmp = seqlens.cumsum(0) * self.spatial_merge_unit + cu_window_seqlens[-1]
+            cu_window_seqlens.extend(cu_seqlens_tmp.tolist())
+            window_index_id += (grid_t * llm_grid_h * llm_grid_w).item()
+        window_index = torch.cat(window_index, dim=0)
+
+        return window_index, cu_window_seqlens
 
     def forward(self, hidden_states: torch.Tensor, grid_thw: torch.Tensor) -> torch.Tensor:
         hidden_states = self.patch_embed(hidden_states)
         rotary_pos_emb = self.rot_pos_emb(grid_thw)
 
+        window_index, cu_window_seqlens = self.get_window_index(grid_thw)
+        cu_window_seqlens = torch.tensor(
+            cu_window_seqlens,
+            device=hidden_states.device,
+            dtype=grid_thw.dtype if torch.jit.is_tracing() else torch.int32,
+        )
+        cu_window_seqlens = torch.unique_consecutive(cu_window_seqlens)
+
+        seq_len, _ = hidden_states.size()
+        hidden_states = hidden_states.reshape(seq_len // self.spatial_merge_unit, self.spatial_merge_unit, -1)
+        hidden_states = hidden_states[window_index, :, :]
+        hidden_states = hidden_states.reshape(seq_len, -1)
+        rotary_pos_emb = rotary_pos_emb.reshape(seq_len // self.spatial_merge_unit, self.spatial_merge_unit, -1)
+        rotary_pos_emb = rotary_pos_emb[window_index, :, :]
+        rotary_pos_emb = rotary_pos_emb.reshape(seq_len, -1)
+
         cu_seqlens = torch.repeat_interleave(grid_thw[:, 1] * grid_thw[:, 2], grid_thw[:, 0]).cumsum(
-            dim=0, dtype=torch.int32
+            dim=0,
+            # Select dtype based on the following factors:
+            #  - FA2 requires that cu_seqlens_q must have dtype int32
+            #  - torch.onnx.export requires that cu_seqlens_q must have same dtype as grid_thw
+            # See https://github.com/huggingface/transformers/pull/34852 for more information
+            dtype=grid_thw.dtype if torch.jit.is_tracing() else torch.int32,
         )
         cu_seqlens = F.pad(cu_seqlens, (1, 0), value=0)
 
-        for blk in self.blocks:
-            hidden_states = blk(hidden_states, cu_seqlens=cu_seqlens, rotary_pos_emb=rotary_pos_emb)
+        for layer_num, blk in enumerate(self.blocks):
+            if layer_num in self.fullatt_block_indexes:
+                cu_seqlens_now = cu_seqlens
+            else:
+                cu_seqlens_now = cu_window_seqlens
+            if self.gradient_checkpointing and self.training:
+                hidden_states = self._gradient_checkpointing_func(
+                    blk.__call__, hidden_states, cu_seqlens_now, rotary_pos_emb
+                )
+            else:
+                hidden_states = blk(
+                    hidden_states,
+                    cu_seqlens=cu_seqlens_now,
+                    rotary_pos_emb=rotary_pos_emb,
+                )
+        hidden_states = self.merger(hidden_states)
+        reverse_indices = torch.argsort(window_index)
+        hidden_states = hidden_states[reverse_indices, :]
 
-        return self.merger(hidden_states)
+        return hidden_states
 
 
 class Qwen2VLRotaryEmbedding(nn.Module):
@@ -2083,7 +2182,7 @@ class QwenOmniThinkerForConditionalGeneration(QwenOmniThinkerPreTrainedModel, Ge
         )
 
         self.vocab_size = config.vocab_size
-        self.language_model = QwenOmniThinkerModel(config)
+        self.model = QwenOmniThinkerModel(config)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         self.pad_token_id = self.config.pad_token_id if self.config.pad_token_id is not None else -1
         self._padding_side = "left"  # set it to left by default, user can use setter to change padding_sides
@@ -2100,10 +2199,10 @@ class QwenOmniThinkerForConditionalGeneration(QwenOmniThinkerPreTrainedModel, Ge
         self._padding_side = padding_side
 
     def get_input_embeddings(self):
-        return self.language_model.get_input_embeddings()
+        return self.model.get_input_embeddings()
 
     def set_input_embeddings(self, value):
-        self.language_model.set_input_embeddings(value)
+        self.model.set_input_embeddings(value)
 
     @add_start_docstrings_to_model_forward(QWENOMNITHINKER_INPUTS_DOCSTRING)
     @replace_return_docstrings(output_type=QwenOmniThinkerCausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
@@ -2228,7 +2327,7 @@ class QwenOmniThinkerForConditionalGeneration(QwenOmniThinkerPreTrainedModel, Ge
                 if attention_mask is not None:
                     attention_mask = attention_mask.to(inputs_embeds.device)
 
-        outputs = self.language_model(
+        outputs = self.model(
             attention_mask=attention_mask,
             position_ids=position_ids,
             past_key_values=past_key_values,
@@ -2434,7 +2533,7 @@ class QwenOmniThinkerForConditionalGeneration(QwenOmniThinkerPreTrainedModel, Ge
         return model_kwargs
 
     def _reorder_cache(self, *args, **kwargs):
-        return self.language_model._reorder_cache(*args, **kwargs)
+        return self.model._reorder_cache(*args, **kwargs)
 
     def get_llm_pos_ids_for_vision(
         self,
@@ -2604,7 +2703,7 @@ class QwenOmniThinkerForConditionalGeneration(QwenOmniThinkerPreTrainedModel, Ge
                     grid_hs = video_grid_thw[:, 1]
                     grid_ws = video_grid_thw[:, 2]
                     t_index = (
-                        torch.arange(grid_t, device=second_per_grids.device)
+                        torch.arange(grid_t, device=raw_input_ids.device)
                         * second_per_grids[video_idx]
                         * position_id_per_seconds
                     ).long()

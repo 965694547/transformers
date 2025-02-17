@@ -23,7 +23,7 @@ import numpy as np
 from ...feature_extraction_utils import BatchFeature
 from ...image_utils import ImageInput, VideoInput
 from ...processing_utils import ProcessingKwargs, ProcessorMixin, Unpack
-from ...tokenization_utils_base import PreTokenizedInput, TextInput
+from ...tokenization_utils_base import PreTokenizedInput, TextInput, PaddingStrategy
 
 
 class QwenOmniThinkerProcessorKwargs(ProcessingKwargs, total=False):
@@ -68,6 +68,7 @@ class QwenOmniThinkerProcessor(ProcessorMixin):
         audios: Union[np.ndarray, List[np.ndarray]] = None,
         sampling_rate: Optional[int] = 16000,
         fps: Optional[List[float]] = None,
+        padding: Union[bool, str, PaddingStrategy] = False,
         **kwargs: Unpack[QwenOmniThinkerProcessorKwargs],
     ) -> BatchFeature:
         """
@@ -101,6 +102,7 @@ class QwenOmniThinkerProcessor(ProcessorMixin):
         output_kwargs = self._merge_kwargs(
             QwenOmniThinkerProcessorKwargs,
             tokenizer_init_kwargs=self.tokenizer.init_kwargs,
+            padding=padding,
             **kwargs,
         )
 
